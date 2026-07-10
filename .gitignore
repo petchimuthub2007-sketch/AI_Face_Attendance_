@@ -1,0 +1,8 @@
+venv/
+dataset/
+trainer/
+__pycache__/
+*.pyc
+.env
+Attendance.csv
+Attendance_Report.xlsx

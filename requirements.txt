@@ -1,0 +1,9 @@
+Flask
+opencv-contrib-python-headless
+numpy
+mysql-connector-python
+pandas
+openpyxl
+gunicorn
+python-dotenv
+reportlab
