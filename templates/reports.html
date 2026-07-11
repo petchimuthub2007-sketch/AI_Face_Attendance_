@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Reports</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 30px; background:#0B0F14; color:#E8EDF2; }
+        h2 { margin-bottom: 6px; }
+        .subtitle { color:#8A95A2; margin-bottom: 24px; font-size: 13px; }
+        .section { background:#121821; border:1px solid #212B36; border-radius:6px; padding:20px; margin-bottom:20px; }
+        .section h3 { margin-bottom: 12px; font-size: 15px; }
+        .btn-row { display:flex; gap:10px; flex-wrap:wrap; }
+        a.btn {
+            display:inline-block; padding:10px 16px; background:#00E5A0; color:#04140F;
+            text-decoration:none; border-radius:4px; font-weight:600; font-size:13px;
+        }
+        a.btn:hover { background:#1AF0B4; }
+        a.btn.secondary { background:transparent; border:1px solid #2C3947; color:#E8EDF2; }
+        form.filters { display:flex; gap:10px; flex-wrap:wrap; align-items:end; }
+        form.filters div { display:flex; flex-direction:column; }
+        form.filters label { font-size:12px; margin-bottom:4px; color:#8A95A2; }
+        form.filters input, form.filters select {
+            padding:8px 10px; border:1px solid #2C3947; border-radius:4px;
+            background:#0B0F14; color:#E8EDF2;
+        }
+        .back { margin-top: 20px; display:inline-block; color:#8A95A2; text-decoration:none; font-size:13px; }
+    </style>
+</head>
+<body>
+
+    <h2>Reports</h2>
+    <p class="subtitle">Generate and export attendance reports.</p>
+
+    <div class="section">
+        <h3>Quick Reports</h3>
+        <div class="btn-row">
+            <a class="btn" href="{{ url_for('export_excel', report_type='daily') }}">Today — Excel</a>
+            <a class="btn secondary" href="{{ url_for('export_pdf', report_type='daily') }}">Today — PDF</a>
+            <a class="btn" href="{{ url_for('export_excel', report_type='monthly') }}">This Month — Excel</a>
+            <a class="btn secondary" href="{{ url_for('export_pdf', report_type='monthly') }}">This Month — PDF</a>
+        </div>
+    </div>
+
+    <div class="section">
+        <h3>Custom Report</h3>
+        <form class="filters" method="GET" action="{{ url_for('export_excel') }}" id="custom-form">
+            <div>
+                <label>Register Number</label>
+                <input type="text" name="register_number" placeholder="e.g. 21CS045">
+            </div>
+            <div>
+                <label>Department</label>
+                <select name="department">
+                    <option value="">All</option>
+                    {% for dept in departments %}
+                        <option value="{{ dept }}">{{ dept }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label>From Date</label>
+                <input type="date" name="date_from">
+            </div>
+            <div>
+                <label>To Date</label>
+                <input type="date" name="date_to">
+            </div>
+            <div>
+                <button type="submit" class="btn" style="border:none; cursor:pointer;">Export Excel</button>
+            </div>
+            <div>
+                <button type="button" class="btn secondary" style="border:1px solid #2C3947; cursor:pointer;" onclick="exportPdf()">Export PDF</button>
+            </div>
+        </form>
+    </div>
+
+    <a class="back" href="{{ url_for('dashboard') }}">← Back to dashboard</a>
+
+<script>
+function exportPdf() {
+    const form = document.getElementById('custom-form');
+    const params = new URLSearchParams(new FormData(form)).toString();
+    window.location.href = "{{ url_for('export_pdf') }}?" + params;
+}
+</script>
+
+</body>
+</html>
