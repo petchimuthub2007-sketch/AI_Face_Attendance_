@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verify attendance — AI Face Attendance</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0B0F14; --surface:#121821; --border:#212B36; --border-strong:#2C3947;
+    --accent:#00E5A0; --danger:#FF5A5A; --amber:#FFB020; --text-primary:#E8EDF2;
+    --text-secondary:#8A95A2; --text-muted:#566270;
+    --font-display:'Space Grotesk',sans-serif; --font-body:'Inter',sans-serif; --font-mono:'JetBrains Mono',monospace;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{
+    min-height:100vh; background:var(--bg); color:var(--text-primary);
+    font-family:var(--font-body); display:flex; align-items:center; justify-content:center; padding:24px;
+  }
+  .card{
+    width:100%; max-width:420px; background:var(--surface); border:1px solid var(--border);
+    border-radius:6px; padding:28px;
+  }
+  h1{ font-family:var(--font-display); font-size:20px; font-weight:500; margin-bottom:4px; }
+  .subtitle{ font-size:13px; color:var(--text-secondary); margin-bottom:18px; }
+  .video-wrap{
+    position:relative; border-radius:4px; overflow:hidden; border:2px solid var(--border-strong);
+    background:#000; transition:border-color 0.2s ease;
+  }
+  .video-wrap.matched{ border-color:var(--accent); }
+  .video-wrap.mismatch{ border-color:var(--danger); }
+  video{ width:100%; display:block; transform:scaleX(-1); }
+  .result{
+    margin-top:16px; padding:12px 14px; border-radius:4px; font-size:13px;
+    border:1px solid var(--border); background:transparent; color:var(--text-secondary);
+  }
+  .result.ok{ border-color:var(--accent); color:var(--accent); background:rgba(0,229,160,0.06); }
+  .result.bad{ border-color:var(--danger); color:var(--danger); background:rgba(255,90,90,0.06); }
+  .result.warn{ border-color:var(--amber); color:var(--amber); background:rgba(255,176,32,0.06); }
+  .done a{
+    display:inline-block; margin-top:14px; background:var(--accent); color:#04140F;
+    font-family:var(--font-display); font-weight:500; font-size:14px; text-decoration:none;
+    padding:12px 20px; border-radius:4px;
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>Verifying — {{ register_number }}</h1>
+  <p class="subtitle">Hold your face steady in front of the camera.</p>
+
+  <div class="video-wrap" id="video-wrap">
+    <video id="video" autoplay playsinline muted></video>
+  </div>
+  <canvas id="canvas" style="display:none;"></canvas>
+
+  <div class="result" id="result">Starting camera…</div>
+
+  <div class="done" id="done-box" style="display:none;">
+    <a href="{{ url_for('dashboard') }}">Back to dashboard</a>
+  </div>
+</div>
+
+<script>
+const registerNumber = "{{ register_number }}";
+const MAX_ATTEMPTS = 25;
+let attempts = 0;
+let verifying = true;
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const resultBox = document.getElementById("result");
+const videoWrap = document.getElementById("video-wrap");
+const doneBox = document.getElementById("done-box");
+
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 480, height: 360 } });
+    video.srcObject = stream;
+    resultBox.textContent = "Looking for a face…";
+    verifyLoop();
+  } catch (err) {
+    resultBox.className = "result bad";
+    resultBox.textContent = "Could not access the camera: " + err.message;
+  }
+}
+
+function captureFrame() {
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.85);
+}
+
+function stopCamera() {
+  const stream = video.srcObject;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+}
+
+async function verifyLoop() {
+  if (!verifying || attempts >= MAX_ATTEMPTS) {
+    if (attempts >= MAX_ATTEMPTS) {
+      resultBox.className = "result warn";
+      resultBox.textContent = "Timed out — no confident match found. Try again from the dashboard.";
+      stopCamera();
+      doneBox.style.display = "block";
+    }
+    return;
+  }
+  attempts += 1;
+
+  const image = captureFrame();
+
+  try {
+    const res = await fetch("/api/verify_face", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ register_number: registerNumber, image: image })
+    });
+    const data = await res.json();
+
+    if (data.status === "verified") {
+      verifying = false;
+      videoWrap.classList.add("matched");
+      resultBox.className = "result ok";
+      resultBox.textContent = `Verified — attendance marked (${data.confidence}% confidence).`;
+      stopCamera();
+      doneBox.style.display = "block";
+      return;
+    } else if (data.status === "mismatch") {
+      videoWrap.classList.add("mismatch");
+      resultBox.className = "result bad";
+      resultBox.textContent = "Face does not match the entered register number.";
+    } else if (data.status === "unknown") {
+      resultBox.className = "result warn";
+      resultBox.textContent = "Face not confidently recognized — hold steady.";
+    } else if (data.status === "no_face") {
+      resultBox.className = "result";
+      resultBox.textContent = "No face detected — center your face in the frame.";
+    } else if (data.status === "no_model") {
+      resultBox.className = "result bad";
+      resultBox.textContent = "No trained model found. Train the model from the dashboard first.";
+      verifying = false;
+      stopCamera();
+      doneBox.style.display = "block";
+      return;
+    }
+  } catch (e) {
+    resultBox.className = "result bad";
+    resultBox.textContent = "Network error during verification.";
+  }
+
+  setTimeout(verifyLoop, 700);
+}
+
+startCamera();
+</script>
+
+</body>
+</html>
