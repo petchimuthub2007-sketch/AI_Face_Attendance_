@@ -1,20 +1,37 @@
 import pandas as pd
-from flask import Flask, render_template, request, redirect, url_for, session
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 import subprocess
 import sys
+import os
 import calendar
+import base64
+import json
+import csv
+import cv2
+import numpy as np
 from database import get_connection
 from flask import send_file
 from openpyxl import Workbook
-from datetime import date
+from datetime import date, datetime
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+CASCADE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "haarcascade_frontalface_default.xml"
+)
+
 
 app = Flask(__name__)
-app.secret_key = "ai_face_attendance_secret"
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "ai_face_attendance_secret")
 
 
 def get_filtered_attendance(register_number="", department="", date_from="", date_to=""):
@@ -257,11 +274,7 @@ def register():
         cursor.close()
         db.close()
 
-        subprocess.Popen(
-            [sys.executable, "capture_face.py", register_number]
-        )
-
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("capture_face_page", register_number=register_number))
 
     return render_template("register.html")
 @app.route("/delete_student/<register_number>")
@@ -300,16 +313,60 @@ def home():
     return render_template("index.html")
 
 
-@app.route("/capture", methods=["POST"])
-def capture():
+@app.route("/capture_face_page")
+def capture_face_page():
 
-    register_number = request.form["register_number"]
+    if "user" not in session:
+        return redirect(url_for("login"))
 
-    subprocess.Popen(
-        [sys.executable, "capture_face.py", register_number]
-    )
+    register_number = request.args.get("register_number", "")
 
-    return redirect(url_for("dashboard"))
+    return render_template("capture_face.html", register_number=register_number)
+
+
+@app.route("/api/save_face_image", methods=["POST"])
+def save_face_image():
+
+    if "user" not in session:
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    register_number = data.get("register_number")
+    image_b64 = data.get("image")
+
+    if not register_number or not image_b64:
+        return jsonify({"error": "missing register_number or image"}), 400
+
+    try:
+        _, encoded = image_b64.split(",", 1) if "," in image_b64 else (None, image_b64)
+        img_bytes = base64.b64decode(encoded)
+        np_arr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        if frame is None:
+            return jsonify({"error": "could not decode image"}), 400
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        detector = cv2.CascadeClassifier(CASCADE_PATH)
+        faces = detector.detectMultiScale(gray, 1.3, 5, minSize=(100, 100))
+
+        if len(faces) == 0:
+            return jsonify({"status": "no_face"})
+
+        x, y, w, h = faces[0]
+        face_crop = gray[y:y + h, x:x + w]
+
+        folder = os.path.join("dataset", register_number)
+        os.makedirs(folder, exist_ok=True)
+
+        count = len(os.listdir(folder)) + 1
+        cv2.imwrite(os.path.join(folder, f"{count}.jpg"), face_crop)
+
+        return jsonify({"status": "saved", "count": count})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/train")
 def train():
@@ -348,27 +405,105 @@ def take_attendance():
 
     register_number = request.form["register_number"]
 
-    # Launch recognize.py with the entered register number so it only
-    # marks attendance when the recognized face matches this ID.
-    subprocess.Popen(
-        [sys.executable, "recognize.py", register_number]
-    )
-
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("verify_attendance_page", register_number=register_number))
 
 
-@app.route("/recognize")
-def recognize():
-    result = subprocess.run(
-        [sys.executable, "recognize.py"],
-        text=True,
-        capture_output=True
-    )
+@app.route("/verify_attendance_page")
+def verify_attendance_page():
 
-    print(result.stdout)
-    print(result.stderr)
+    if "user" not in session:
+        return redirect(url_for("login"))
 
-    return f"<pre>{result.stdout}\n{result.stderr}</pre>"
+    register_number = request.args.get("register_number", "")
+
+    return render_template("verify_attendance.html", register_number=register_number)
+
+
+@app.route("/api/verify_face", methods=["POST"])
+def verify_face():
+
+    if "user" not in session:
+        return jsonify({"error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    register_number = data.get("register_number")
+    image_b64 = data.get("image")
+
+    if not register_number or not image_b64:
+        return jsonify({"error": "missing register_number or image"}), 400
+
+    if not os.path.exists("trainer/trainer.yml"):
+        return jsonify({"status": "no_model"})
+
+    try:
+        _, encoded = image_b64.split(",", 1) if "," in image_b64 else (None, image_b64)
+        img_bytes = base64.b64decode(encoded)
+        np_arr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        if frame is None:
+            return jsonify({"error": "could not decode image"}), 400
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        detector = cv2.CascadeClassifier(CASCADE_PATH)
+        faces = detector.detectMultiScale(gray, 1.3, 5, minSize=(100, 100))
+
+        if len(faces) == 0:
+            return jsonify({"status": "no_face"})
+
+        recognizer = cv2.face.LBPHFaceRecognizer_create()
+        recognizer.read("trainer/trainer.yml")
+
+        with open("trainer/label_map.json", "r") as f:
+            label_map = json.load(f)
+
+        x, y, w, h = faces[0]
+        face_crop = gray[y:y + h, x:x + w]
+
+        label, confidence = recognizer.predict(face_crop)
+        confidence_percent = round(100 - confidence)
+        recognized_register_number = label_map.get(str(label), "Unknown")
+
+        if confidence_percent < 60:
+            return jsonify({"status": "unknown"})
+
+        if recognized_register_number != register_number:
+            return jsonify({"status": "mismatch", "confidence": confidence_percent})
+
+        today = date.today().strftime("%Y-%m-%d")
+        now_time = datetime.now().strftime("%H:%M:%S")
+
+        db = get_connection()
+        cursor = db.cursor()
+
+        cursor.execute(
+            "SELECT * FROM attendance WHERE register_number=%s AND attendance_date=%s",
+            (register_number, today)
+        )
+
+        if cursor.fetchone() is None:
+            cursor.execute(
+                "INSERT INTO attendance (register_number, attendance_date, attendance_time) VALUES (%s,%s,%s)",
+                (register_number, today, now_time)
+            )
+            db.commit()
+
+        cursor.close()
+        db.close()
+
+        csv_file = "Attendance.csv"
+        file_exists = os.path.isfile(csv_file)
+
+        with open(csv_file, "a", newline="") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["Name", "Date", "Time"])
+            writer.writerow([register_number, today, now_time])
+
+        return jsonify({"status": "verified", "confidence": confidence_percent})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 from database import get_connection
